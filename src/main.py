@@ -1,27 +1,36 @@
 import pygame
+import menu
 
 def main():
     pygame.init()
 
-    # variables
+    # Zmienne
     info = pygame.display.Info()
     screen_size = (info.current_w, info.current_h)
 
-    # setup
+    # Setup
     screen = pygame.display.set_mode(screen_size)
     pygame.display.set_caption("GodGrid")
     running = True
-    # main loop
+
+    # Główna pętla
     while running:
-        # event handling
+        # Obsługa zdarzeń
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                mouse_pos = pygame.mouse.get_pos()
+                for btn in menu.buttons:
+                    if btn["rect"].collidepoint(mouse_pos):
+                        if btn["text"] == "X":
+                            running = False
+
+        # Aktualizacje ekranu
         screen.fill((255, 255, 255))
+        menu.menu_draw(screen)
         pygame.display.flip()
+
     pygame.quit()
 
 if __name__ == "__main__":
