@@ -1,61 +1,25 @@
 import pygame
+
 import menu
-import os
-
-char_to_tile = {
-    "G": "grass",
-    "W": "water",
-    "F": "forest",
-    "M": "mountain"
-}
-
-tile_colors = {
-    "grass": (50, 200, 50),
-    "water": (50, 50, 200),
-    "forest": (20, 120, 20),
-    "mountain": (100, 100, 100)
-}
-
-# wczytywanie mapy
-def wczytaj_mape():
-    mapa = []
-    base_path = os.path.dirname(os.path.dirname(__file__))
-    map_path = os.path.join(base_path, "data", "map.txt")
-    with open(map_path, "r") as f:
-        for linia in f:
-            row = [char_to_tile[znak] for znak in linia.strip()]
-            mapa.append(row)
-    return mapa
-
-
-def clamp_camera(camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height):
-    map_pixel_width = map_width * tile_size * zoom
-    map_pixel_height = map_height * tile_size * zoom
-
-    bound_x_a = screen_width - map_pixel_width
-    bound_x_b = 0
-    min_x = min(bound_x_a, bound_x_b)
-    max_x = max(bound_x_a, bound_x_b)
-
-    bound_y_a = screen_height - map_pixel_height
-    bound_y_b = 0
-    min_y = min(bound_y_a, bound_y_b)
-    max_y = max(bound_y_a, bound_y_b)
-
-    camera_x = max(min_x, min(max_x, camera_x))
-    camera_y = max(min_y, min(max_y, camera_y))
-
-    return camera_x, camera_y
+from camera_utils import clamp_camera, zoom_at_cursor
+from map_io import TILE_COLORS, load_map, map_path_from_project_root, save_map
+from mouse_state import MouseState
+from painting import apply_brush, apply_brush_line, screen_to_tile
 
 
 def main():
     pygame.init()
 
-    # Zmienne
     info = pygame.display.Info()
     screen_size = (info.current_w, info.current_h)
+    screen_width, screen_height = screen_size
+    viewport_top = menu.MENU_HEIGHT
+    viewport_width = screen_width
+    viewport_height = screen_height - viewport_top
 
-    mapa = wczytaj_mape()
+    map_path = map_path_from_project_root(__file__)
+    mapa = load_map(map_path)
+
     tile_size = 10
     zoom = 1.0
     min_zoom = 0.5
@@ -64,106 +28,160 @@ def main():
     map_width = len(mapa[0])
     map_height = len(mapa)
 
-    # Setup
     screen = pygame.display.set_mode(screen_size)
     pygame.display.set_caption("GodGrid")
     clock = pygame.time.Clock()
     running = True
 
-    screen_width, screen_height = screen_size
-
-    # Kamera
-    camera_x = (screen_width - map_width * tile_size * zoom) // 2
-    camera_y = (screen_height - map_height * tile_size * zoom) // 2
+    camera_x = (viewport_width - map_width * tile_size * zoom) // 2
+    camera_y = (viewport_height - map_height * tile_size * zoom) // 2
     camera_x, camera_y = clamp_camera(
-        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+        camera_x,
+        camera_y,
+        zoom,
+        map_width,
+        map_height,
+        tile_size,
+        viewport_width,
+        viewport_height,
     )
 
-    # Przesuwanie myszką
-    dragging = False
+    mouse = MouseState()
 
-    # Główna pętla
+    def place_at_mouse(mouse_pos, interpolate=False):
+        if menu.is_point_on_menu(mouse_pos):
+            return
+
+        tile_draw_size = tile_size * zoom
+        tile_pos = screen_to_tile(
+            mouse_pos[0],
+            mouse_pos[1] - viewport_top,
+            camera_x,
+            camera_y,
+            tile_draw_size,
+            map_width,
+            map_height,
+        )
+        if tile_pos is None:
+            return
+
+        tile_id = menu.get_current_tool()["item_id"]
+        brush_size = menu.get_brush_size()
+
+        if mouse.last_paint_tile is None or not interpolate:
+            apply_brush(mapa, tile_pos, tile_id, brush_size)
+            mouse.last_paint_tile = tile_pos
+            return
+
+        apply_brush_line(mapa, mouse.last_paint_tile, tile_pos, tile_id, brush_size)
+        mouse.last_paint_tile = tile_pos
+
     while running:
-        dt = clock.tick(60) / 1000.0
+        dt = clock.tick_busy_loop(0) / 1000.0
 
-        # Obsługa zdarzeń
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_s and (event.mod & pygame.KMOD_CTRL):
+                saved_path = save_map(mapa, map_path)
+                print(f"Mapa zapisana: {saved_path}")
+
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_pos = pygame.mouse.get_pos()
 
-                for btn in menu.buttons:
-                    if btn["rect"].collidepoint(mouse_pos):
-                        if btn["text"] == "X":
+                if event.button == 1:
+                    if menu.is_point_on_menu(mouse_pos):
+                        action = menu.handle_mouse_down(mouse_pos)
+                        if action == "quit":
                             running = False
-                        break
-                else:
-                    if event.button == 1:
-                        dragging = True
+                    else:
+                        mouse.start_paint()
+                        place_at_mouse(mouse_pos)
+
+                if event.button == 3 and not menu.is_point_on_menu(mouse_pos):
+                    mouse.start_drag()
+
+                if event.button == 4:
+                    if not menu.is_point_on_menu(mouse_pos):
+                        camera_x, camera_y, zoom = zoom_at_cursor(
+                            mouse_pos[0],
+                            mouse_pos[1] - viewport_top,
+                            1,
+                            camera_x,
+                            camera_y,
+                            zoom,
+                            min_zoom,
+                            max_zoom,
+                            map_width,
+                            map_height,
+                            tile_size,
+                            viewport_width,
+                            viewport_height,
+                        )
+
+                if event.button == 5:
+                    if not menu.is_point_on_menu(mouse_pos):
+                        camera_x, camera_y, zoom = zoom_at_cursor(
+                            mouse_pos[0],
+                            mouse_pos[1] - viewport_top,
+                            -1,
+                            camera_x,
+                            camera_y,
+                            zoom,
+                            min_zoom,
+                            max_zoom,
+                            map_width,
+                            map_height,
+                            tile_size,
+                            viewport_width,
+                            viewport_height,
+                        )
 
             if event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
-                    dragging = False
+                    mouse.stop_paint()
+                if event.button == 3:
+                    mouse.stop_drag()
 
             if event.type == pygame.MOUSEMOTION:
-                if dragging:
+                if mouse.dragging:
                     dx, dy = event.rel
                     camera_x += dx
                     camera_y += dy
                     camera_x, camera_y = clamp_camera(
-                        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+                        camera_x,
+                        camera_y,
+                        zoom,
+                        map_width,
+                        map_height,
+                        tile_size,
+                        viewport_width,
+                        viewport_height,
                     )
+
+                if mouse.painting:
+                    place_at_mouse(event.pos, interpolate=True)
 
             if event.type == pygame.MOUSEWHEEL:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
-
-                # Punkt pod myszką przed zoomem
-                world_x = (mouse_x - camera_x) / zoom
-                world_y = (mouse_y - camera_y) / zoom
-
-                if event.y > 0:
-                    zoom *= 1.1
-                elif event.y < 0:
-                    zoom /= 1.1
-
-                zoom = max(min_zoom, min(max_zoom, zoom))
-
-                # Ustawienie kamery tak, żeby zoom był pod myszką
-                camera_x = mouse_x - world_x * zoom
-                camera_y = mouse_y - world_y * zoom
-                camera_x, camera_y = clamp_camera(
-                    camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
-                )
-
-            # Fallback dla starszych wersji pygame
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 4:
-                    mouse_x, mouse_y = pygame.mouse.get_pos()
-                    world_x = (mouse_x - camera_x) / zoom
-                    world_y = (mouse_y - camera_y) / zoom
-                    zoom *= 1.1
-                    zoom = max(min_zoom, min(max_zoom, zoom))
-                    camera_x = mouse_x - world_x * zoom
-                    camera_y = mouse_y - world_y * zoom
-                    camera_x, camera_y = clamp_camera(
-                        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+                if not menu.is_point_on_menu((mouse_x, mouse_y)):
+                    camera_x, camera_y, zoom = zoom_at_cursor(
+                        mouse_x,
+                        mouse_y - viewport_top,
+                        event.y,
+                        camera_x,
+                        camera_y,
+                        zoom,
+                        min_zoom,
+                        max_zoom,
+                        map_width,
+                        map_height,
+                        tile_size,
+                        viewport_width,
+                        viewport_height,
                     )
 
-                if event.button == 5:
-                    mouse_x, mouse_y = pygame.mouse.get_pos()
-                    world_x = (mouse_x - camera_x) / zoom
-                    world_y = (mouse_y - camera_y) / zoom
-                    zoom /= 1.1
-                    zoom = max(min_zoom, min(max_zoom, zoom))
-                    camera_x = mouse_x - world_x * zoom
-                    camera_y = mouse_y - world_y * zoom
-                    camera_x, camera_y = clamp_camera(
-                        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
-                    )
-
-        # Ruch WASD
         keys = pygame.key.get_pressed()
         move_speed = 500 * zoom
 
@@ -177,36 +195,42 @@ def main():
             camera_y -= move_speed * dt
 
         camera_x, camera_y = clamp_camera(
-            camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+            camera_x,
+            camera_y,
+            zoom,
+            map_width,
+            map_height,
+            tile_size,
+            viewport_width,
+            viewport_height,
         )
 
-        # Rysowanie mapy
+        if mouse.painting:
+            place_at_mouse(pygame.mouse.get_pos(), interpolate=True)
+
         screen.fill((0, 0, 0))
 
         tile_draw_size = tile_size * zoom
-
-        # Widoczne fragmenty mapy
         start_x = max(0, int((-camera_x) / tile_draw_size) - 2)
         start_y = max(0, int((-camera_y) / tile_draw_size) - 2)
-        end_x = min(map_width, int((screen_width - camera_x) / tile_draw_size) + 2)
-        end_y = min(map_height, int((screen_height - camera_y) / tile_draw_size) + 2)
+        end_x = min(map_width, int((viewport_width - camera_x) / tile_draw_size) + 2)
+        end_y = min(map_height, int((viewport_height - camera_y) / tile_draw_size) + 2)
 
         for y in range(start_y, end_y):
             for x in range(start_x, end_x):
                 tile = mapa[y][x]
-                color = tile_colors.get(tile, (255, 0, 255))
+                color = TILE_COLORS.get(tile, (255, 0, 255))
 
                 draw_x = int(camera_x + x * tile_draw_size)
-                draw_y = int(camera_y + y * tile_draw_size)
+                draw_y = int(viewport_top + camera_y + y * tile_draw_size)
                 rect = pygame.Rect(draw_x, draw_y, int(tile_draw_size) + 1, int(tile_draw_size) + 1)
-
                 pygame.draw.rect(screen, color, rect)
 
-        # UI
         menu.menu_draw(screen)
-
         pygame.display.flip()
 
+    saved_path = save_map(mapa, map_path)
+    print(f"Mapa zapisana: {saved_path}")
     pygame.quit()
 
 
