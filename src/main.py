@@ -28,6 +28,26 @@ def wczytaj_mape():
     return mapa
 
 
+def clamp_camera(camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height):
+    map_pixel_width = map_width * tile_size * zoom
+    map_pixel_height = map_height * tile_size * zoom
+
+    bound_x_a = screen_width - map_pixel_width
+    bound_x_b = 0
+    min_x = min(bound_x_a, bound_x_b)
+    max_x = max(bound_x_a, bound_x_b)
+
+    bound_y_a = screen_height - map_pixel_height
+    bound_y_b = 0
+    min_y = min(bound_y_a, bound_y_b)
+    max_y = max(bound_y_a, bound_y_b)
+
+    camera_x = max(min_x, min(max_x, camera_x))
+    camera_y = max(min_y, min(max_y, camera_y))
+
+    return camera_x, camera_y
+
+
 def main():
     pygame.init()
 
@@ -55,6 +75,9 @@ def main():
     # Kamera
     camera_x = (screen_width - map_width * tile_size * zoom) // 2
     camera_y = (screen_height - map_height * tile_size * zoom) // 2
+    camera_x, camera_y = clamp_camera(
+        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+    )
 
     # Przesuwanie myszką
     dragging = False
@@ -89,6 +112,9 @@ def main():
                     dx, dy = event.rel
                     camera_x += dx
                     camera_y += dy
+                    camera_x, camera_y = clamp_camera(
+                        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+                    )
 
             if event.type == pygame.MOUSEWHEEL:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -107,6 +133,9 @@ def main():
                 # Ustawienie kamery tak, żeby zoom był pod myszką
                 camera_x = mouse_x - world_x * zoom
                 camera_y = mouse_y - world_y * zoom
+                camera_x, camera_y = clamp_camera(
+                    camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+                )
 
             # Fallback dla starszych wersji pygame
             if event.type == pygame.MOUSEBUTTONDOWN:
@@ -118,6 +147,9 @@ def main():
                     zoom = max(min_zoom, min(max_zoom, zoom))
                     camera_x = mouse_x - world_x * zoom
                     camera_y = mouse_y - world_y * zoom
+                    camera_x, camera_y = clamp_camera(
+                        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+                    )
 
                 if event.button == 5:
                     mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -127,6 +159,9 @@ def main():
                     zoom = max(min_zoom, min(max_zoom, zoom))
                     camera_x = mouse_x - world_x * zoom
                     camera_y = mouse_y - world_y * zoom
+                    camera_x, camera_y = clamp_camera(
+                        camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+                    )
 
         # Ruch WASD
         keys = pygame.key.get_pressed()
@@ -140,6 +175,10 @@ def main():
             camera_y += move_speed * dt
         if keys[pygame.K_s]:
             camera_y -= move_speed * dt
+
+        camera_x, camera_y = clamp_camera(
+            camera_x, camera_y, zoom, map_width, map_height, tile_size, screen_width, screen_height
+        )
 
         # Rysowanie mapy
         screen.fill((0, 0, 0))
