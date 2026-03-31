@@ -16,7 +16,7 @@ class WorldConfig:
     width: int = 100
     height: int = 100
     seed: int = 0
-    sea_level: float = 0.52
+    sea_level: float = 0.38
     mountain_strength: float = 0.55
     climate_bias: float = 0.0
     chunk_size: int = 64
@@ -395,6 +395,43 @@ def _smooth_river_shapes(final_map):
                 final_map[y][x] = updated[y][x]
 
 
+def _add_ores(final_map, seed: int):
+    h = len(final_map)
+    w = len(final_map[0])
+    water_mask = [[final_map[y][x] in ("W", "O") for x in range(w)] for y in range(h)]
+    dist_to_water = _distance_to_water(water_mask)
+
+    for y in range(h):
+        for x in range(w):
+            tile = final_map[y][x]
+
+            # Clay near rivers and seas: just off the water edge on lowland/highland.
+            if tile in ("G", "H") and 1 <= dist_to_water[y][x] <= 2:
+                n_clay = _value_noise(x / 7.0, y / 7.0, seed + 701)
+                if n_clay > 0.86:
+                    final_map[y][x] = "L"
+                    continue
+
+            # Coal + copper lower in the mountains.
+            if tile in ("H", "M"):
+                n_coal = _value_noise(x / 8.0, y / 8.0, seed + 911)
+                n_copper = _value_noise(x / 9.0, y / 9.0, seed + 1511)
+
+                if (tile == "H" and n_coal > 0.86) or (tile == "M" and n_coal > 0.91):
+                    final_map[y][x] = "C"
+                    continue
+
+                if (tile == "H" and n_copper > 0.89) or (tile == "M" and n_copper > 0.93):
+                    final_map[y][x] = "R"
+                    continue
+
+            # Iron higher in the mountains.
+            if tile in ("M", "P"):
+                n_iron = _value_noise(x / 10.0, y / 10.0, seed + 1211)
+                if n_iron > 0.915:
+                    final_map[y][x] = "I"
+
+
 def _add_rivers(final_map, elevation_map, seed: int, min_dim: int):
     h = len(final_map)
     w = len(final_map[0])
@@ -406,7 +443,7 @@ def _add_rivers(final_map, elevation_map, seed: int, min_dim: int):
     if not sources or not ocean_targets:
         return
 
-    target_rivers = max(1, min(3, (w * h) // 40000 + 1))
+    target_rivers = rng.randint(1, 3)
     min_source_spacing = max(6, min_dim // 20)
     min_source_spacing_sq = min_source_spacing * min_source_spacing
     min_length = max(14, min_dim // 6)
@@ -708,8 +745,8 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
     mountain_depth = _distance_from_non_mountain(refined_mountain_mask)
 
     deep_ocean_threshold = max(2, int(min_dim * 0.025) + 1)
-    mountain_high_threshold = 2
-    mountain_peak_threshold = max(3, int(min_dim * 0.012) + 1)
+    mountain_high_threshold = 4
+    mountain_peak_threshold = max(4, int(min_dim * 0.018) + 2)
     ocean_noise_scale = max(12.0, min_dim * 0.25)
 
     final_map = [["G"] * width for _ in range(height)]
@@ -728,7 +765,7 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
             if tile == "M":
                 depth = mountain_depth[y][x]
                 score = mountain_score_map[y][x]
-                if depth >= mountain_peak_threshold and score > mountain_cutoff + 0.025:
+                if depth >= mountain_peak_threshold and score > mountain_cutoff + 0.06:
                     final_map[y][x] = "P"
                 elif depth >= mountain_high_threshold:
                     final_map[y][x] = "M"
@@ -752,7 +789,7 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
                 if final_map[y][x] == "M":
                     peak_candidates.append((mountain_score_map[y][x], x, y))
         peak_candidates.sort(reverse=True)
-        promote = min(max(1, len(peak_candidates) // 18), 40)
+        promote = min(max(1, len(peak_candidates) // 40), 12)
         for i in range(min(promote, len(peak_candidates))):
             _, x, y = peak_candidates[i]
             final_map[y][x] = "P"
@@ -801,6 +838,8 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
     _emit_progress(progress_callback, 0.97, "Dodawanie rzek")
     _add_rivers(final_map, elevation_map, seed, min_dim)
     _smooth_river_shapes(final_map)
+    _emit_progress(progress_callback, 0.99, "Dodawanie rud")
+    _add_ores(final_map, seed)
 
     _emit_progress(progress_callback, 1.0, "Mapa gotowa")
     return final_map
@@ -838,7 +877,7 @@ def _ask_config_interactive(default_seed: int | None = None) -> WorldConfig:
     width = _ask_int("World width", 100, MIN_WORLD_SIZE, MAX_WORLD_SIZE)
     height = _ask_int("World height", 100, MIN_WORLD_SIZE, MAX_WORLD_SIZE)
     seed = _ask_int("Seed", default_seed, 0, 2_147_483_647)
-    sea_level = _ask_float("Sea level", 0.52, 0.30, 0.75)
+    sea_level = _ask_float("Sea level", 0.38, 0.30, 0.75)
     mountain_strength = _ask_float("Mountain strength", 0.55, 0.0, 1.0)
     climate_bias = _ask_float("Climate bias (-cold / +warm)", 0.0, -1.0, 1.0)
 
@@ -860,7 +899,7 @@ def _parse_args():
     parser.add_argument("--width", type=int, default=100, help="World width (20-300)")
     parser.add_argument("--height", type=int, default=100, help="World height (20-300)")
     parser.add_argument("--seed", type=int, default=None, help="Seed (default: random)")
-    parser.add_argument("--sea-level", type=float, default=0.52, help="Sea level ratio (0.30-0.75)")
+    parser.add_argument("--sea-level", type=float, default=0.38, help="Sea level ratio (0.30-0.75)")
     parser.add_argument("--mountain-strength", type=float, default=0.55, help="Mountain amount (0.0-1.0)")
     parser.add_argument("--climate-bias", type=float, default=0.0, help="Climate shift (-1.0 to 1.0)")
     parser.add_argument("--chunk-size", type=int, default=64, help="Chunk size (16-256)")

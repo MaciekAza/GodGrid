@@ -1,6 +1,6 @@
 import pygame
 
-MENU_HEIGHT = 82
+MENU_HEIGHT = 104
 
 TOPBAR_BG = (24, 27, 34)
 TOPBAR_BG_2 = (31, 35, 44)
@@ -30,10 +30,15 @@ TOOL_LIBRARY = {
         {"id": "highland", "color": (108, 134, 88)},
         {"id": "mountain_high", "color": (122, 122, 122)},
         {"id": "mountain_peak", "color": (198, 198, 198)},
+        {"id": "coal_ore", "color": (70, 70, 78)},
+        {"id": "iron_ore", "color": (153, 122, 92)},
+        {"id": "copper_ore", "color": (178, 102, 62)},
+        {"id": "clay", "color": (154, 112, 92)},
     ]
 }
 
 font = None
+font_small = None
 ui_rects = {
     "close": pygame.Rect(0, 0, 0, 0),
     "items": [],
@@ -53,12 +58,27 @@ world_size_menu_open = False
 world_size_index = 2
 BRUSH_SIZES = [1, 3, 6, 10]
 BRUSH_DOT_RADIUS = {1: 4, 3: 8, 6: 12, 10: 16}
+BLOCK_LABELS = {
+    "grass": "Trawa",
+    "water": "Woda",
+    "deep_ocean": "Ocean",
+    "forest": "Las",
+    "highland": "Wyzyna",
+    "mountain_high": "Gora",
+    "mountain_peak": "Szczyt",
+    "coal_ore": "Wegiel",
+    "iron_ore": "Zelazo",
+    "copper_ore": "Miedz",
+    "clay": "Glina",
+}
 
 
 def _ensure_fonts():
-    global font
+    global font, font_small
     if font is None:
         font = pygame.font.SysFont("segoeui", 22)
+    if font_small is None:
+        font_small = pygame.font.SysFont("segoeui", 12)
 
 
 def _get_item_color(item_id):
@@ -216,7 +236,7 @@ def menu_draw(screen):
     items = []
     item_size = 34
     item_x = 20
-    item_y = 24
+    item_y = 18
     gap = 10
 
     for tool in TOOL_LIBRARY["blocks"]:
@@ -229,6 +249,11 @@ def menu_draw(screen):
         swatch_rect = rect.inflate(-8, -8)
         pygame.draw.rect(screen, tool["color"], swatch_rect, border_radius=4)
         pygame.draw.rect(screen, TOPBAR_BORDER, swatch_rect, width=1, border_radius=4)
+
+        label_text = BLOCK_LABELS.get(tool["id"], tool["id"])
+        label = font_small.render(label_text, True, DOT_COLOR)
+        label_rect = label.get_rect(center=(rect.centerx, rect.bottom + 10))
+        screen.blit(label, label_rect)
 
         items.append({"id": tool["id"], "rect": rect})
         item_x += item_size + gap

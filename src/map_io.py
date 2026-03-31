@@ -8,6 +8,11 @@ CHAR_TO_TILE = {
     "H": "highland",
     "M": "mountain_high",
     "P": "mountain_peak",
+    "C": "coal_ore",
+    "I": "iron_ore",
+    "R": "copper_ore",
+    "L": "clay",
+    "D": "gold_ore",
 }
 
 TILE_TO_CHAR = {value: key for key, value in CHAR_TO_TILE.items()}
@@ -20,6 +25,11 @@ TILE_COLORS = {
     "highland": (108, 134, 88),
     "mountain_high": (122, 122, 122),
     "mountain_peak": (198, 198, 198),
+    "coal_ore": (70, 70, 78),
+    "iron_ore": (153, 122, 92),
+    "copper_ore": (178, 102, 62),
+    "clay": (154, 112, 92),
+    "gold_ore": (216, 172, 36),
 }
 
 
