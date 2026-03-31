@@ -3,8 +3,11 @@ import os
 CHAR_TO_TILE = {
     "G": "grass",
     "W": "water",
+    "O": "deep_ocean",
     "F": "forest",
-    "M": "mountain",
+    "H": "highland",
+    "M": "mountain_high",
+    "P": "mountain_peak",
 }
 
 TILE_TO_CHAR = {value: key for key, value in CHAR_TO_TILE.items()}
@@ -12,8 +15,11 @@ TILE_TO_CHAR = {value: key for key, value in CHAR_TO_TILE.items()}
 TILE_COLORS = {
     "grass": (50, 200, 50),
     "water": (50, 50, 200),
+    "deep_ocean": (18, 36, 125),
     "forest": (20, 120, 20),
-    "mountain": (100, 100, 100),
+    "highland": (108, 134, 88),
+    "mountain_high": (122, 122, 122),
+    "mountain_peak": (198, 198, 198),
 }
 
 

@@ -35,12 +35,17 @@ def apply_brush(mapa, tile_pos, tile_id, brush_size):
     map_height = len(mapa)
     map_width = len(mapa[0])
     offsets = get_brush_offsets(brush_size)
+    changed_tiles = set()
 
     for dx, dy in offsets:
         xx = x + dx
         yy = y + dy
         if 0 <= xx < map_width and 0 <= yy < map_height:
-            mapa[yy][xx] = tile_id
+            if mapa[yy][xx] != tile_id:
+                mapa[yy][xx] = tile_id
+                changed_tiles.add((xx, yy))
+
+    return changed_tiles
 
 
 def apply_brush_line(mapa, start_tile, end_tile, tile_id, brush_size):
@@ -52,10 +57,12 @@ def apply_brush_line(mapa, start_tile, end_tile, tile_id, brush_size):
     steps = max(abs(dx), abs(dy))
 
     if steps == 0:
-        apply_brush(mapa, start_tile, tile_id, brush_size)
-        return
+        return apply_brush(mapa, start_tile, tile_id, brush_size)
 
+    changed_tiles = set()
     for i in range(1, steps + 1):
         ix = round(start_x + (dx * i) / steps)
         iy = round(start_y + (dy * i) / steps)
-        apply_brush(mapa, (ix, iy), tile_id, brush_size)
+        changed_tiles.update(apply_brush(mapa, (ix, iy), tile_id, brush_size))
+
+    return changed_tiles
