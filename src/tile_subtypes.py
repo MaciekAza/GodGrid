@@ -68,6 +68,16 @@ def resolve_subtype(mapa, x: int, y: int) -> str:
     return mapa[y][x]
 
 
+def _bounds_around_changed(mapa, changed_tiles, radius: int):
+    h = len(mapa)
+    w = len(mapa[0])
+    min_x = max(0, min(x for x, _ in changed_tiles) - radius)
+    max_x = min(w - 1, max(x for x, _ in changed_tiles) + radius)
+    min_y = max(0, min(y for _, y in changed_tiles) - radius)
+    max_y = min(h - 1, max(y for _, y in changed_tiles) + radius)
+    return min_x, max_x, min_y, max_y
+
+
 def build_subtype_map(mapa):
     return [[resolve_subtype(mapa, x, y) for x in range(len(mapa[0]))] for y in range(len(mapa))]
 
@@ -76,12 +86,7 @@ def refresh_subtypes_around(mapa, subtype_map, changed_tiles, radius: int = 1):
     if not changed_tiles:
         return
 
-    h = len(mapa)
-    w = len(mapa[0])
-    min_x = max(0, min(x for x, _ in changed_tiles) - radius)
-    max_x = min(w - 1, max(x for x, _ in changed_tiles) + radius)
-    min_y = max(0, min(y for _, y in changed_tiles) - radius)
-    max_y = min(h - 1, max(y for _, y in changed_tiles) + radius)
+    min_x, max_x, min_y, max_y = _bounds_around_changed(mapa, changed_tiles, radius)
 
     for y in range(min_y, max_y + 1):
         for x in range(min_x, max_x + 1):
@@ -114,12 +119,7 @@ def refresh_colors_around(mapa, subtype_map, color_map, changed_tiles, fallback_
     if not changed_tiles:
         return
 
-    h = len(mapa)
-    w = len(mapa[0])
-    min_x = max(0, min(x for x, _ in changed_tiles) - radius)
-    max_x = min(w - 1, max(x for x, _ in changed_tiles) + radius)
-    min_y = max(0, min(y for _, y in changed_tiles) - radius)
-    max_y = min(h - 1, max(y for _, y in changed_tiles) + radius)
+    min_x, max_x, min_y, max_y = _bounds_around_changed(mapa, changed_tiles, radius)
 
     for y in range(min_y, max_y + 1):
         for x in range(min_x, max_x + 1):

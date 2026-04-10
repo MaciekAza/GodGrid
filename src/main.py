@@ -1,8 +1,11 @@
+import os
 import math
 import random
 
 import pygame
 
+from animals import ANIMAL_DRAW_ORDER, ANIMAL_SPECS, spawn_initial_animals, step_animals
+from camera_utils import clamp_camera, zoom_at_cursor
 import menu
 from map_gen import WorldConfig, generuj_mape, recommended_chunk_size, zapisz_mape
 from map_io import TILE_COLORS, load_map, map_path_from_project_root, save_map
@@ -37,10 +40,21 @@ def main():
     progress_small_font = pygame.font.SysFont("segoeui", 22)
     running = True
     needs_redraw = True
+    mob_layer_dirty = True
+    base_frame_cache = pygame.Surface(screen_size)
+    animal_rng = random.Random(93775)
+    animals = spawn_initial_animals(subtype_map, animal_rng)
+    animal_sim_accum_ms = 0.0
+    animal_sim_step_ms = 40.0
 
+    base_tile_size = 1.0
+    zoom = 1.0
+    min_zoom = 0.60
+    max_zoom = 3.00
     tile_draw_size = 1.0
     camera_x = 0.0
     camera_y = 0.0
+    drag_last_pos = None
     map_layer_surface = pygame.Surface((1, 1))
     map_layer_scale = 4
     flower_layer_surface = pygame.Surface((1, 1), pygame.SRCALPHA)
@@ -48,7 +62,8 @@ def main():
     water_phase = 0.0
     anim_accum_ms = 0.0
     anim_step_ms = 50.0
-    coastal_wave_tiles = []
+    water_subtypes = {"water", "deep_ocean"}
+    coastal_wave_tiles = {}
     clouds = []
     cloud_time = 0.0
     scaled_map_cache = None
@@ -57,6 +72,26 @@ def main():
     scaled_cache_height = 0
     scaled_cache_dirty = True
     reduced_motion = False
+    assets_animals_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "animals")
+    animal_base_textures = {}
+    for species in ANIMAL_DRAW_ORDER:
+        frames = []
+        frame_idx = 0
+        while True:
+            frame_path = os.path.join(assets_animals_dir, f"{species}_{frame_idx}.png")
+            if not os.path.exists(frame_path):
+                break
+            frames.append(pygame.image.load(frame_path).convert_alpha())
+            frame_idx += 1
+
+        if not frames:
+            texture_path = os.path.join(assets_animals_dir, f"{species}.png")
+            if os.path.exists(texture_path):
+                frames.append(pygame.image.load(texture_path).convert_alpha())
+
+        if frames:
+            animal_base_textures[species] = frames
+    animal_texture_cache = {}
 
     def clamp_channel(v: int):
         return max(0, min(255, int(v)))
@@ -87,7 +122,7 @@ def main():
     def styled_tile_color(x: int, y: int):
         subtype = subtype_map[y][x]
         base = color_map[y][x]
-        is_water = subtype in ("water", "deep_ocean")
+        is_water = subtype in water_subtypes
 
         has_other_neighbor = False
         near_water = False
@@ -95,7 +130,7 @@ def main():
             nsub = subtype_map[ny][nx]
             if nsub != subtype:
                 has_other_neighbor = True
-            if nsub in ("water", "deep_ocean"):
+            if nsub in water_subtypes:
                 near_water = True
 
         if (not is_water) and near_water:
@@ -128,12 +163,42 @@ def main():
                     out.add((nx, ny))
         return out
 
+    def _coastal_wave_entry(x: int, y: int):
+        subtype = subtype_map[y][x]
+        if subtype not in water_subtypes:
+            return None
+
+        coastal = False
+        for nx, ny in neighbors4(x, y):
+            if subtype_map[ny][nx] not in water_subtypes:
+                coastal = True
+                break
+        if not coastal:
+            return None
+
+        h = ((x * 83492791) ^ (y * 27644437) ^ 0xA5A5A5A5) & 0xFFFFFFFF
+        return x, y, subtype, h
+
     def compute_fixed_view():
-        nonlocal tile_draw_size, camera_x, camera_y
-        tile_draw_size = viewport_height / max(1, map_height)
+        nonlocal base_tile_size, zoom, tile_draw_size, camera_x, camera_y, scaled_cache_dirty
+        base_tile_size = viewport_height / max(1, map_height)
+        zoom = 1.0
+        tile_draw_size = base_tile_size * zoom
         map_pixel_w = map_width * tile_draw_size
+        map_pixel_h = map_height * tile_draw_size
         camera_x = (viewport_width - map_pixel_w) / 2
-        camera_y = 0.0
+        camera_y = (viewport_height - map_pixel_h) / 2
+        camera_x, camera_y = clamp_camera(
+            camera_x,
+            camera_y,
+            zoom,
+            map_width,
+            map_height,
+            base_tile_size,
+            viewport_width,
+            viewport_height,
+        )
+        scaled_cache_dirty = True
 
     def rebuild_clouds():
         nonlocal clouds
@@ -153,16 +218,16 @@ def main():
                 }
             )
 
-    def draw_clouds(target_surface, map_screen_x: int, map_screen_y: int, scaled_map_width: int):
+    def draw_clouds(target_surface, map_screen_x: int, map_screen_y: int, scaled_map_width: int, scaled_map_height: int):
         if not clouds:
             return
 
-        layer = pygame.Surface((scaled_map_width, viewport_height), pygame.SRCALPHA)
+        layer = pygame.Surface((scaled_map_width, scaled_map_height), pygame.SRCALPHA)
         for cloud in clouds:
             base_x = cloud["x_pct"] * scaled_map_width
             amp = cloud["amp_pct"] * scaled_map_width
             cx = int(base_x + math.sin(cloud_time * cloud["speed"] + cloud["phase"]) * amp)
-            cy = int(cloud["y_pct"] * viewport_height)
+            cy = int(cloud["y_pct"] * scaled_map_height)
 
             radius = max(5, int(tile_draw_size * 1.45 * cloud["scale"]))
             color = (250, 252, 255, cloud["alpha"])
@@ -209,15 +274,8 @@ def main():
         radius = max(1, int(size * 0.48))
 
         pygame.draw.rect(map_layer_surface, color, rect, border_radius=radius)
-        highlight = blend(color, (255, 255, 255), 0.10)
-        hx = rect.x + max(0, rect.w // 4)
-        hy = rect.y + max(0, rect.h // 4)
-        if hx < map_layer_surface.get_width() and hy < map_layer_surface.get_height():
-            map_layer_surface.set_at((hx, hy), highlight)
 
     def flower_color_for_tile(x: int, y: int):
-        if tile_draw_size < 5.0:
-            return None
         if subtype_map[y][x] != "grass":
             return None
 
@@ -277,34 +335,35 @@ def main():
 
     def rebuild_water_wave_data():
         nonlocal coastal_wave_tiles
-        coastal_wave_tiles = []
+        coastal_wave_tiles = {}
         for y in range(map_height):
             for x in range(map_width):
-                subtype = subtype_map[y][x]
-                if subtype not in ("water", "deep_ocean"):
-                    continue
-                coastal = False
-                for nx, ny in neighbors4(x, y):
-                    if subtype_map[ny][nx] not in ("water", "deep_ocean"):
-                        coastal = True
-                        break
-                if not coastal:
-                    continue
-                h = ((x * 83492791) ^ (y * 27644437) ^ 0xA5A5A5A5) & 0xFFFFFFFF
-                coastal_wave_tiles.append((x, y, subtype, h))
+                entry = _coastal_wave_entry(x, y)
+                if entry is not None:
+                    coastal_wave_tiles[(x, y)] = entry
 
-    def draw_water_wave_lines(target_surface, map_screen_x: int, map_screen_y: int):
+    def refresh_water_wave_tiles(changed_tiles):
+        if not changed_tiles:
+            return
+
+        tiles_to_refresh = expand_tiles(changed_tiles, radius=1)
+        for x, y in tiles_to_refresh:
+            coastal_wave_tiles.pop((x, y), None)
+            entry = _coastal_wave_entry(x, y)
+            if entry is not None:
+                coastal_wave_tiles[(x, y)] = entry
+
+    def draw_water_wave_lines(target_surface, map_screen_x: int, map_screen_y: int, scaled_map_width: int, scaled_map_height: int):
         if tile_draw_size < 4.0:
             return
         if not coastal_wave_tiles:
             return
 
-        scaled_map_width = max(1, int(round(map_width * tile_draw_size)))
-        wave_layer = pygame.Surface((scaled_map_width, viewport_height), pygame.SRCALPHA)
+        wave_layer = pygame.Surface((scaled_map_width, scaled_map_height), pygame.SRCALPHA)
         line_px = max(1, int(tile_draw_size * 0.10))
         segment_len = max(2, int(tile_draw_size * 0.34))
 
-        for x, y, subtype, h in coastal_wave_tiles:
+        for x, y, subtype, h in coastal_wave_tiles.values():
             if (h % 12) != 0:
                 continue
 
@@ -359,6 +418,63 @@ def main():
 
         pygame.display.flip()
 
+    def get_animal_texture(species: str, sprite_size: int, frame_index: int):
+        key = (species, sprite_size, frame_index)
+        cached = animal_texture_cache.get(key)
+        if cached is not None:
+            return cached
+
+        frames = animal_base_textures.get(species)
+        if not frames:
+            return None
+
+        source = frames[frame_index % len(frames)]
+        if sprite_size <= source.get_width():
+            scaled = pygame.transform.scale(source, (sprite_size, sprite_size))
+        else:
+            scaled = pygame.transform.smoothscale(source, (sprite_size, sprite_size))
+        animal_texture_cache[key] = scaled
+        return scaled
+
+    def draw_animals(target_surface, map_screen_x: int, map_screen_y: int, scaled_map_width: int):
+        if not animals:
+            return
+
+        sprite_size = max(4, int(tile_draw_size * 0.95))
+        radius = max(1, int(tile_draw_size * 0.24))
+        map_right = map_screen_x + scaled_map_width
+        scaled_map_height = max(1, int(round(map_height * tile_draw_size)))
+        map_bottom = map_screen_y + scaled_map_height
+        viewport_bottom = viewport_top + viewport_height
+        ticks = pygame.time.get_ticks()
+
+        for animal in animals:
+            moving = abs(animal.target_x - animal.x) + abs(animal.target_y - animal.y) > 0.04
+            frames = animal_base_textures.get(animal.species, [])
+            frame_idx = 0
+            if moving and len(frames) > 1:
+                phase = int((ticks / 110.0) + (animal.x * 2.1) + (animal.y * 1.7))
+                frame_idx = phase % len(frames)
+            bob = int(math.sin((ticks * 0.013) + animal.x * 0.9 + animal.y * 0.4)) if moving else 0
+
+            draw_x = map_screen_x + int(animal.x * tile_draw_size + (tile_draw_size - sprite_size) * 0.5)
+            draw_y = map_screen_y + int(animal.y * tile_draw_size + (tile_draw_size - sprite_size) * 0.5) + bob
+            if draw_x < map_screen_x or draw_y < map_screen_y or draw_x >= map_right or draw_y >= map_bottom:
+                continue
+            if draw_y + sprite_size <= viewport_top or draw_y >= viewport_bottom:
+                continue
+
+            texture = get_animal_texture(animal.species, sprite_size, frame_idx)
+            if texture is not None:
+                target_surface.blit(texture, (draw_x, draw_y))
+                continue
+
+            color = ANIMAL_SPECS[animal.species]["color"]
+            sx = draw_x + sprite_size // 2
+            sy = draw_y + sprite_size // 2
+            pygame.draw.circle(target_surface, (22, 24, 28), (sx + 1, sy + 1), radius)
+            pygame.draw.circle(target_surface, color, (sx, sy), radius)
+
     compute_fixed_view()
     rebuild_map_layer()
     rebuild_flower_layer()
@@ -368,7 +484,7 @@ def main():
     mouse = MouseState()
 
     def regenerate_world(width, height):
-        nonlocal mapa, subtype_map, color_map, map_width, map_height, needs_redraw
+        nonlocal mapa, subtype_map, color_map, map_width, map_height, needs_redraw, mob_layer_dirty, animals, animal_sim_accum_ms, drag_last_pos
 
         seed = random.randint(0, 2_147_483_647)
         config = WorldConfig(
@@ -398,11 +514,15 @@ def main():
         rebuild_flower_layer()
         rebuild_water_wave_data()
         rebuild_clouds()
+        animals = spawn_initial_animals(subtype_map, animal_rng)
+        animal_sim_accum_ms = 0.0
 
         mouse.dragging = False
         mouse.painting = False
         mouse.last_paint_tile = None
+        drag_last_pos = None
         needs_redraw = True
+        mob_layer_dirty = True
         print(f"Wygenerowano nowy swiat: {map_width}x{map_height}, seed={seed}")
 
     def place_at_mouse(mouse_pos, interpolate=False):
@@ -421,30 +541,33 @@ def main():
         if tile_pos is None:
             return False
 
-        tile_id = menu.get_current_tool()["item_id"]
+        tile_id = menu.get_selected_item_id()
         brush_size = menu.get_brush_size()
 
         if mouse.last_paint_tile is None or not interpolate:
             changed_tiles = apply_brush(mapa, tile_pos, tile_id, brush_size)
-            refresh_subtypes_around(mapa, subtype_map, changed_tiles)
-            refresh_colors_around(mapa, subtype_map, color_map, changed_tiles, TILE_COLORS)
-            affected = expand_tiles(changed_tiles, radius=1)
-            update_map_layer_tiles(affected)
-            rebuild_water_wave_data()
-            mouse.last_paint_tile = tile_pos
-            return bool(changed_tiles)
+        else:
+            changed_tiles = apply_brush_line(mapa, mouse.last_paint_tile, tile_pos, tile_id, brush_size)
 
-        changed_tiles = apply_brush_line(mapa, mouse.last_paint_tile, tile_pos, tile_id, brush_size)
+        if not changed_tiles:
+            return False
+
         refresh_subtypes_around(mapa, subtype_map, changed_tiles)
         refresh_colors_around(mapa, subtype_map, color_map, changed_tiles, TILE_COLORS)
         affected = expand_tiles(changed_tiles, radius=1)
         update_map_layer_tiles(affected)
-        rebuild_water_wave_data()
+        refresh_water_wave_tiles(changed_tiles)
         mouse.last_paint_tile = tile_pos
-        return bool(changed_tiles)
+        return True
 
     while running:
         dt_ms = clock.tick(120)
+        animal_sim_accum_ms += dt_ms
+        while animal_sim_accum_ms >= animal_sim_step_ms:
+            animal_sim_accum_ms -= animal_sim_step_ms
+            if step_animals(animals, subtype_map, animal_sim_step_ms * 0.001, animal_rng):
+                mob_layer_dirty = True
+
         if not reduced_motion:
             anim_accum_ms += dt_ms
             while anim_accum_ms >= anim_step_ms:
@@ -467,6 +590,28 @@ def main():
                     print(f"Reduced motion: {'ON' if reduced_motion else 'OFF'}")
                     needs_redraw = True
 
+            if event.type == pygame.MOUSEWHEEL:
+                mouse_pos = pygame.mouse.get_pos()
+                if not menu.is_point_on_menu(mouse_pos):
+                    camera_x, camera_y, zoom = zoom_at_cursor(
+                        mouse_pos[0],
+                        mouse_pos[1] - viewport_top,
+                        event.y,
+                        camera_x,
+                        camera_y,
+                        zoom,
+                        min_zoom,
+                        max_zoom,
+                        map_width,
+                        map_height,
+                        base_tile_size,
+                        viewport_width,
+                        viewport_height,
+                    )
+                    tile_draw_size = base_tile_size * zoom
+                    scaled_cache_dirty = True
+                    needs_redraw = True
+
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_pos = pygame.mouse.get_pos()
 
@@ -482,39 +627,84 @@ def main():
                         mouse.start_paint()
                         if place_at_mouse(mouse_pos):
                             needs_redraw = True
+                elif event.button in (2, 3) and not menu.is_point_on_menu(mouse_pos):
+                    mouse.stop_paint()
+                    mouse.start_drag()
+                    drag_last_pos = mouse_pos
 
-            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                mouse.stop_paint()
+            if event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1:
+                    mouse.stop_paint()
+                if event.button in (2, 3):
+                    mouse.stop_drag()
+                    drag_last_pos = None
 
-            if event.type == pygame.MOUSEMOTION and mouse.painting:
-                if place_at_mouse(event.pos, interpolate=True):
+            if event.type == pygame.MOUSEMOTION:
+                if mouse.dragging and drag_last_pos is not None:
+                    dx = event.pos[0] - drag_last_pos[0]
+                    dy = event.pos[1] - drag_last_pos[1]
+                    drag_last_pos = event.pos
+                    camera_x += dx
+                    camera_y += dy
+                    camera_x, camera_y = clamp_camera(
+                        camera_x,
+                        camera_y,
+                        zoom,
+                        map_width,
+                        map_height,
+                        base_tile_size,
+                        viewport_width,
+                        viewport_height,
+                    )
                     needs_redraw = True
+                elif mouse.painting:
+                    if place_at_mouse(event.pos, interpolate=True):
+                        needs_redraw = True
 
         if needs_redraw:
             screen.fill((0, 0, 0))
             scaled_map_width = max(1, int(round(map_width * tile_draw_size)))
+            scaled_map_height = max(1, int(round(map_height * tile_draw_size)))
             if (
                 scaled_cache_dirty
                 or scaled_map_cache is None
                 or scaled_flower_cache is None
                 or scaled_cache_width != scaled_map_width
-                or scaled_cache_height != viewport_height
+                or scaled_cache_height != scaled_map_height
             ):
-                scaled_map_cache = pygame.transform.scale(map_layer_surface, (scaled_map_width, viewport_height))
-                scaled_flower_cache = pygame.transform.scale(flower_layer_surface, (scaled_map_width, viewport_height))
+                scaled_map_cache = pygame.transform.scale(map_layer_surface, (scaled_map_width, scaled_map_height))
+                scaled_flower_cache = pygame.transform.scale(flower_layer_surface, (scaled_map_width, scaled_map_height))
                 scaled_cache_width = scaled_map_width
-                scaled_cache_height = viewport_height
+                scaled_cache_height = scaled_map_height
                 scaled_cache_dirty = False
             map_screen_x = int(camera_x)
             map_screen_y = int(viewport_top + camera_y)
+            screen.set_clip(pygame.Rect(0, viewport_top, viewport_width, viewport_height))
             screen.blit(scaled_map_cache, (map_screen_x, map_screen_y))
-            screen.blit(scaled_flower_cache, (map_screen_x, map_screen_y))
-            if not reduced_motion:
-                draw_water_wave_lines(screen, map_screen_x, map_screen_y)
-                draw_clouds(screen, map_screen_x, map_screen_y, scaled_map_width)
+            if tile_draw_size >= 5.0:
+                screen.blit(scaled_flower_cache, (map_screen_x, map_screen_y))
+            if not reduced_motion and zoom <= 2.4:
+                draw_water_wave_lines(screen, map_screen_x, map_screen_y, scaled_map_width, scaled_map_height)
+                draw_clouds(screen, map_screen_x, map_screen_y, scaled_map_width, scaled_map_height)
+            screen.set_clip(None)
             menu.menu_draw(screen)
+            base_frame_cache.blit(screen, (0, 0))
+            screen.set_clip(pygame.Rect(0, viewport_top, viewport_width, viewport_height))
+            draw_animals(screen, map_screen_x, map_screen_y, scaled_map_width)
+            screen.set_clip(None)
             pygame.display.flip()
             needs_redraw = False
+            mob_layer_dirty = False
+        elif mob_layer_dirty:
+            map_screen_x = int(camera_x)
+            map_screen_y = int(viewport_top + camera_y)
+            scaled_map_width = max(1, int(round(map_width * tile_draw_size)))
+            screen.blit(base_frame_cache, (0, 0))
+            screen.set_clip(pygame.Rect(0, viewport_top, viewport_width, viewport_height))
+            draw_animals(screen, map_screen_x, map_screen_y, scaled_map_width)
+            screen.set_clip(None)
+            pygame.display.flip()
+            mob_layer_dirty = False
 
     saved_path = save_map(mapa, map_path)
     print(f"Mapa zapisana: {saved_path}")

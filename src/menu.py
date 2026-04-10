@@ -36,7 +36,6 @@ TOOL_LIBRARY = {
         {"id": "clay", "color": (154, 112, 92)},
     ]
 }
-
 font = None
 font_small = None
 ui_rects = {
@@ -81,13 +80,6 @@ def _ensure_fonts():
         font_small = pygame.font.SysFont("segoeui", 12)
 
 
-def _get_item_color(item_id):
-    for item in TOOL_LIBRARY["blocks"]:
-        if item["id"] == item_id:
-            return item["color"]
-    return (255, 0, 255)
-
-
 def is_point_on_menu(pos):
     if pos[1] <= MENU_HEIGHT:
         return True
@@ -100,12 +92,8 @@ def is_point_on_menu(pos):
     return False
 
 
-def get_current_tool():
-    return {
-        "category": "blocks",
-        "item_id": selected_item_id,
-        "color": _get_item_color(selected_item_id),
-    }
+def get_selected_item_id():
+    return selected_item_id
 
 
 def get_brush_size():

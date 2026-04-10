@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 MIN_WORLD_SIZE = 20
 MAX_WORLD_SIZE = 300
+INV_U32_MAX = 1.0 / 4294967295.0
 
 
 @dataclass
@@ -33,21 +34,6 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def _smoothstep(t: float) -> float:
-    return t * t * (3.0 - 2.0 * t)
-
-
-def _lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
-
-
-def _hash01(ix: int, iy: int, seed: int) -> float:
-    n = ix * 374761393 + iy * 668265263 + seed * 144269
-    n = (n ^ (n >> 13)) * 1274126177
-    n = n ^ (n >> 16)
-    return (n & 0xFFFFFFFF) / 4294967295.0
-
-
 def _value_noise(x: float, y: float, seed: int) -> float:
     x0 = int(x)
     y0 = int(y)
@@ -56,17 +42,33 @@ def _value_noise(x: float, y: float, seed: int) -> float:
 
     tx = x - x0
     ty = y - y0
-    sx = _smoothstep(tx)
-    sy = _smoothstep(ty)
+    sx = tx * tx * (3.0 - 2.0 * tx)
+    sy = ty * ty * (3.0 - 2.0 * ty)
+    seed_term = seed * 144269
 
-    v00 = _hash01(x0, y0, seed)
-    v10 = _hash01(x1, y0, seed)
-    v01 = _hash01(x0, y1, seed)
-    v11 = _hash01(x1, y1, seed)
+    n = x0 * 374761393 + y0 * 668265263 + seed_term
+    n = (n ^ (n >> 13)) * 1274126177
+    n = n ^ (n >> 16)
+    v00 = (n & 0xFFFFFFFF) * INV_U32_MAX
 
-    nx0 = _lerp(v00, v10, sx)
-    nx1 = _lerp(v01, v11, sx)
-    return _lerp(nx0, nx1, sy)
+    n = x1 * 374761393 + y0 * 668265263 + seed_term
+    n = (n ^ (n >> 13)) * 1274126177
+    n = n ^ (n >> 16)
+    v10 = (n & 0xFFFFFFFF) * INV_U32_MAX
+
+    n = x0 * 374761393 + y1 * 668265263 + seed_term
+    n = (n ^ (n >> 13)) * 1274126177
+    n = n ^ (n >> 16)
+    v01 = (n & 0xFFFFFFFF) * INV_U32_MAX
+
+    n = x1 * 374761393 + y1 * 668265263 + seed_term
+    n = (n ^ (n >> 13)) * 1274126177
+    n = n ^ (n >> 16)
+    v11 = (n & 0xFFFFFFFF) * INV_U32_MAX
+
+    nx0 = v00 + (v10 - v00) * sx
+    nx1 = v01 + (v11 - v01) * sx
+    return nx0 + (nx1 - nx0) * sy
 
 
 def _validate_config(config: WorldConfig) -> WorldConfig:
@@ -177,29 +179,35 @@ def _refine_biomes(map_chars, water_mask, passes: int, stride: int):
     return result
 
 
-def _distance_from_land(water_mask):
-    h = len(water_mask)
-    w = len(water_mask[0])
+def _distance_map(mask, source_value: bool, fallback_edges: bool = False):
+    h = len(mask)
+    w = len(mask[0])
     dist = [[-1] * w for _ in range(h)]
     q = deque()
 
     for y in range(h):
-        for x in range(w):
-            if not water_mask[y][x]:
-                dist[y][x] = 0
+        row = mask[y]
+        dist_row = dist[y]
+        for x, value in enumerate(row):
+            if value == source_value:
+                dist_row[x] = 0
                 q.append((x, y))
 
-    if not q:
+    if fallback_edges and not q:
         for x in range(w):
-            dist[0][x] = 0
-            dist[h - 1][x] = 0
-            q.append((x, 0))
-            q.append((x, h - 1))
+            if dist[0][x] < 0:
+                dist[0][x] = 0
+                q.append((x, 0))
+            if dist[h - 1][x] < 0:
+                dist[h - 1][x] = 0
+                q.append((x, h - 1))
         for y in range(h):
-            dist[y][0] = 0
-            dist[y][w - 1] = 0
-            q.append((0, y))
-            q.append((w - 1, y))
+            if dist[y][0] < 0:
+                dist[y][0] = 0
+                q.append((0, y))
+            if dist[y][w - 1] < 0:
+                dist[y][w - 1] = 0
+                q.append((w - 1, y))
 
     while q:
         x, y = q.popleft()
@@ -218,111 +226,18 @@ def _distance_from_land(water_mask):
             q.append((x, y + 1))
 
     return dist
+
+
+def _distance_from_land(water_mask):
+    return _distance_map(water_mask, source_value=False, fallback_edges=True)
 
 
 def _distance_from_non_mountain(mountain_mask):
-    h = len(mountain_mask)
-    w = len(mountain_mask[0])
-    dist = [[-1] * w for _ in range(h)]
-    q = deque()
-
-    for y in range(h):
-        for x in range(w):
-            if not mountain_mask[y][x]:
-                dist[y][x] = 0
-                q.append((x, y))
-
-    if not q:
-        for x in range(w):
-            dist[0][x] = 0
-            dist[h - 1][x] = 0
-            q.append((x, 0))
-            q.append((x, h - 1))
-        for y in range(h):
-            dist[y][0] = 0
-            dist[y][w - 1] = 0
-            q.append((0, y))
-            q.append((w - 1, y))
-
-    while q:
-        x, y = q.popleft()
-        base = dist[y][x]
-        if x > 0 and dist[y][x - 1] < 0:
-            dist[y][x - 1] = base + 1
-            q.append((x - 1, y))
-        if x + 1 < w and dist[y][x + 1] < 0:
-            dist[y][x + 1] = base + 1
-            q.append((x + 1, y))
-        if y > 0 and dist[y - 1][x] < 0:
-            dist[y - 1][x] = base + 1
-            q.append((x, y - 1))
-        if y + 1 < h and dist[y + 1][x] < 0:
-            dist[y + 1][x] = base + 1
-            q.append((x, y + 1))
-
-    return dist
+    return _distance_map(mountain_mask, source_value=False, fallback_edges=True)
 
 
 def _distance_to_water(water_mask):
-    h = len(water_mask)
-    w = len(water_mask[0])
-    dist = [[-1] * w for _ in range(h)]
-    q = deque()
-
-    for y in range(h):
-        for x in range(w):
-            if water_mask[y][x]:
-                dist[y][x] = 0
-                q.append((x, y))
-
-    while q:
-        x, y = q.popleft()
-        base = dist[y][x]
-        if x > 0 and dist[y][x - 1] < 0:
-            dist[y][x - 1] = base + 1
-            q.append((x - 1, y))
-        if x + 1 < w and dist[y][x + 1] < 0:
-            dist[y][x + 1] = base + 1
-            q.append((x + 1, y))
-        if y > 0 and dist[y - 1][x] < 0:
-            dist[y - 1][x] = base + 1
-            q.append((x, y - 1))
-        if y + 1 < h and dist[y + 1][x] < 0:
-            dist[y + 1][x] = base + 1
-            q.append((x, y + 1))
-
-    return dist
-
-
-def _distance_to_mountains(mountain_mask):
-    h = len(mountain_mask)
-    w = len(mountain_mask[0])
-    dist = [[-1] * w for _ in range(h)]
-    q = deque()
-
-    for y in range(h):
-        for x in range(w):
-            if mountain_mask[y][x]:
-                dist[y][x] = 0
-                q.append((x, y))
-
-    while q:
-        x, y = q.popleft()
-        base = dist[y][x]
-        if x > 0 and dist[y][x - 1] < 0:
-            dist[y][x - 1] = base + 1
-            q.append((x - 1, y))
-        if x + 1 < w and dist[y][x + 1] < 0:
-            dist[y][x + 1] = base + 1
-            q.append((x + 1, y))
-        if y > 0 and dist[y - 1][x] < 0:
-            dist[y - 1][x] = base + 1
-            q.append((x, y - 1))
-        if y + 1 < h and dist[y + 1][x] < 0:
-            dist[y + 1][x] = base + 1
-            q.append((x, y + 1))
-
-    return dist
+    return _distance_map(water_mask, source_value=True)
 
 
 def _ocean_connected_water_mask(final_map):
@@ -641,6 +556,12 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
     continent_scale = max(22.0, min_dim * 0.95)
     detail_scale = max(9.0, continent_scale * 0.28)
     ridge_scale = max(6.0, detail_scale * 0.65)
+    continent_x = [x / continent_scale for x in range(width)]
+    continent_y = [y / continent_scale for y in range(height)]
+    detail_x = [x / detail_scale for x in range(width)]
+    detail_y = [y / detail_scale for y in range(height)]
+    ridge_x = [x / ridge_scale for x in range(width)]
+    ridge_y = [y / ridge_scale for y in range(height)]
 
     elevation_map = [[0.0] * width for _ in range(height)]
 
@@ -651,9 +572,9 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
             x_end = min(width, cx + chunk)
             for y in range(cy, y_end):
                 for x in range(cx, x_end):
-                    continent = _value_noise(x / continent_scale, y / continent_scale, seed + 17)
-                    detail = _value_noise(x / detail_scale, y / detail_scale, seed + 71)
-                    ridge = _value_noise(x / ridge_scale, y / ridge_scale, seed + 131)
+                    continent = _value_noise(continent_x[x], continent_y[y], seed + 17)
+                    detail = _value_noise(detail_x[x], detail_y[y], seed + 71)
+                    ridge = _value_noise(ridge_x[x], ridge_y[y], seed + 131)
                     elevation = continent * 0.66 + detail * 0.24 + ridge * 0.10
                     elevation_map[y][x] = _clamp(elevation, 0.0, 1.0)
             elevation_chunk_idx += 1
@@ -689,7 +610,7 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
                         continue
 
                     elevation = elevation_map[y][x]
-                    ridge = _value_noise(x / ridge_scale, y / ridge_scale, seed + 409)
+                    ridge = _value_noise(ridge_x[x], ridge_y[y], seed + 409)
                     mountain_score = elevation * 0.78 + ridge * 0.22
                     mountain_score_map[y][x] = mountain_score
                     if (
@@ -748,6 +669,8 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
     mountain_high_threshold = 4
     mountain_peak_threshold = max(4, int(min_dim * 0.018) + 2)
     ocean_noise_scale = max(12.0, min_dim * 0.25)
+    ocean_noise_x = [x / ocean_noise_scale for x in range(width)]
+    ocean_noise_y = [y / ocean_noise_scale for y in range(height)]
 
     final_map = [["G"] * width for _ in range(height)]
     for y in range(height):
@@ -755,7 +678,7 @@ def generuj_mape(config: WorldConfig | None = None, progress_callback=None):
             tile = map_chars[y][x]
             if tile == "W":
                 depth = water_depth[y][x]
-                ocean_noise = _value_noise(x / ocean_noise_scale, y / ocean_noise_scale, seed + 521)
+                ocean_noise = _value_noise(ocean_noise_x[x], ocean_noise_y[y], seed + 521)
                 if depth >= deep_ocean_threshold and ocean_noise > 0.22:
                     final_map[y][x] = "O"
                 else:
